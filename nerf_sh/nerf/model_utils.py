@@ -193,7 +193,7 @@ def volumetric_rendering(rgb, sigma, z_vals, dirs, white_bkgd):
     dists = jnp.concatenate(
         [
             z_vals[Ellipsis, 1:] - z_vals[Ellipsis, :-1],
-            jnp.broadcast_to([1e10], z_vals[Ellipsis, :1].shape),
+            jnp.broadcast_to(1e10, z_vals[Ellipsis, :1].shape),
         ],
         -1,
     )
@@ -330,3 +330,26 @@ def add_gaussian_noise(key, raw, noise_std, randomized):
         return raw + random.normal(key, raw.shape, dtype=raw.dtype) * noise_std
     else:
         return raw
+
+def vmap_module(module, in_axes=0, out_axes=0, num_batch_dims=1):
+    """Vectorize a module.
+
+    Args:
+        module: the module to vectorize.
+        in_axes: the `in_axes` argument passed to vmap. See `jax.vmap`.
+        out_axes: the `out_axes` argument passed to vmap. See `jax.vmap`.
+        num_batch_dims: the number of batch dimensions (how many times to apply vmap
+        to the module).
+
+    Returns:
+        A vectorized module.
+    """
+    for _ in range(num_batch_dims):
+        module = nn.vmap(
+            module,
+            variable_axes={'params': None},
+            split_rngs={'params': False},
+            in_axes=in_axes,
+            out_axes=out_axes)
+
+    return module

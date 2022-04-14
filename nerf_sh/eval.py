@@ -33,13 +33,16 @@ import jax
 from jax import random
 import numpy as np
 
-from nerf_sh.nerf import datasets
-from nerf_sh.nerf import models
-from nerf_sh.nerf import utils
+from nerf import datasets
+from nerf import models
+from nerf import utils
 
 FLAGS = flags.FLAGS
 
 utils.define_flags()
+FLAGS.train_dir='/home/oppo2/Documents/zzr/plenoctree/debug/nerfies'
+FLAGS.config='/home/oppo2/Documents/zzr/plenoctree/nerf_sh/config/blender'
+FLAGS.data_dir='/home/oppo2/Documents/zzr/mipnerf/data/nerf_synthetic/drums'
 
 
 def main(unused_argv):
@@ -97,12 +100,12 @@ def main(unused_argv):
                 showcase_acc = pred_acc
                 if not FLAGS.render_path:
                     showcase_gt = batch["pixels"]
-            #  if not FLAGS.render_path:
-            #      psnr = utils.compute_psnr(((pred_color - batch["pixels"]) ** 2).mean())
-            #      ssim = ssim_fn(pred_color, batch["pixels"])
-            #      print(f"PSNR = {psnr:.4f}, SSIM = {ssim:.4f}")
-            #      psnrs.append(float(psnr))
-            #      ssims.append(float(ssim))
+            if not FLAGS.render_path:
+                psnr = utils.compute_psnr(((pred_color - batch["pixels"]) ** 2).mean())
+                ssim = ssim_fn(pred_color, batch["pixels"])
+                print(f"PSNR = {psnr:.4f}, SSIM = {ssim:.4f}")
+                psnrs.append(float(psnr))
+                ssims.append(float(ssim))
             if FLAGS.save_output:
                 utils.save_img(pred_color, path.join(out_dir, "{:03d}.png".format(idx)))
                 utils.save_img(
@@ -126,6 +129,8 @@ def main(unused_argv):
         #          f.write(" ".join([str(v) for v in psnrs]))
         #      with utils.open_file(path.join(out_dir, f"ssims_{step}.txt"), "w") as f:
         #          f.write(" ".join([str(v) for v in ssims]))
+        print('Mean PSNR: ',np.mean(psnrs))
+        print('Mean SSIM: ',np.mean(psnrs))
         if FLAGS.eval_once:
             break
         if int(step) >= FLAGS.max_steps:

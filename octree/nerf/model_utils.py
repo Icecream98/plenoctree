@@ -17,14 +17,18 @@
 # Lint as: python3
 """Helper functions/classes for model definition."""
 
+from doctest import Example
 import functools
 from typing import Any, Callable
 import math
 
+import functorch
 import torch
 import torch.nn as nn
+import cupy
 
-
+from flax import linen as flaxnn
+import numpy as np
 def dense_layer(in_features, out_features):
     layer = nn.Linear(in_features, out_features)
     # The initialization matters!
@@ -189,3 +193,22 @@ def posenc(x, min_deg, max_deg, legacy_posenc_order=False):
         four_feat = torch.sin(torch.cat([xb, xb + 0.5 * math.pi], dim=-1))
     return torch.cat([x] + [four_feat], dim=-1)
 
+
+def vmap_module(module,example,num_batch_dims=1):
+    """Vectorize a module.
+
+    Args:
+        module: the module to vectorize.
+        in_axes: the `in_axes` argument passed to vmap. See `jax.vmap`.
+        out_axes: the `out_axes` argument passed to vmap. See `jax.vmap`.
+        num_batch_dims: the number of batch dimensions (how many times to apply vmap
+        to the module).
+
+    Returns:
+        A vectorized module.
+    """
+    for _ in range(num_batch_dims):
+        module = functorch.vmap(
+            module)
+
+    return module

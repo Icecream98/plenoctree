@@ -22,10 +22,11 @@ from flax import linen as nn
 from jax import random
 import jax.numpy as jnp
 
-from nerf_sh.nerf import model_utils
-from nerf_sh.nerf import utils
-from nerf_sh.nerf import sh
-from nerf_sh.nerf import sg
+from nerf import model_utils
+from nerf import utils
+from nerf import sh
+from nerf import sg
+from nerf import modules
 
 
 def get_model(key, args):
@@ -76,6 +77,8 @@ class NerfModel(nn.Module):
     rgb_activation: Callable[Ellipsis, Any]  # Output RGB activation.
     sigma_activation: Callable[Ellipsis, Any]  # Output sigma activation.
     legacy_posenc_order: bool  # Keep the same ordering as the original tf code.
+    num_nerf_point_freqs: int # nerfies config
+    num_nerf_viewdir_freqs: int # nerfies config
 
     def setup(self):
         # Construct the "coarse" MLP. Weird name is for
@@ -116,22 +119,31 @@ class NerfModel(nn.Module):
                     random.uniform(key2, [x, 1]) * jnp.pi * 2,  # phi
                 ], axis=-1), self.sg_dim)
 
+        self.point_encoder = model_utils.vmap_module(
+            modules.SinusoidalEncoder, num_batch_dims=2)(
+                num_freqs=self.num_nerf_point_freqs)
+        self.viewdir_encoder = model_utils.vmap_module(
+            modules.SinusoidalEncoder, num_batch_dims=1)(
+                num_freqs=self.num_nerf_viewdir_freqs)
+
     def _quick_init(self):
         points = jnp.zeros((1, 1, 3), dtype=jnp.float32)
-        points_enc = model_utils.posenc(
-            points,
-            self.min_deg_point,
-            self.max_deg_point,
-            self.legacy_posenc_order,
-        )
+        # points_enc = model_utils.posenc(
+        #     points,
+        #     self.min_deg_point,
+        #     self.max_deg_point,
+        #     self.legacy_posenc_order,
+        # )
+        points_enc=self.point_encoder(points)
         if self.use_viewdirs:
             viewdirs = jnp.zeros((1, 1, 3), dtype=jnp.float32)
-            viewdirs_enc = model_utils.posenc(
-                viewdirs,
-                0,
-                self.deg_view,
-                self.legacy_posenc_order,
-            )
+            # viewdirs_enc = model_utils.posenc(
+            #     viewdirs,
+            #     0,
+            #     self.deg_view,
+            #     self.legacy_posenc_order,
+            # )
+            viewdirs_enc=self.viewdir_encoder(viewdirs)
             self.MLP_0(points_enc, viewdirs_enc)
             if self.num_fine_samples > 0:
                 self.MLP_1(points_enc, viewdirs_enc)
@@ -155,13 +167,15 @@ class NerfModel(nn.Module):
           raw_rgb: jnp.ndarray [B, 3 * (sh_deg + 1)**2 or 3 or 3 * sg_dim]
           raw_sigma: jnp.ndarray [B, 1]
         """
-        points = points[None]
-        points_enc = model_utils.posenc(
-            points,
-            self.min_deg_point,
-            self.max_deg_point,
-            self.legacy_posenc_order,
-        )
+        points = points[None] #1,1w,3
+        # points_enc = model_utils.posenc(
+        #     points,
+        #     self.min_deg_point,
+        #     self.max_deg_point,
+        #     self.legacy_posenc_order,
+        # )
+        
+        points_enc=self.point_encoder(points) #nerfies 1,1w,51
         if self.num_fine_samples > 0 and not coarse:
             mlp = self.MLP_1
         else:
@@ -169,15 +183,16 @@ class NerfModel(nn.Module):
         if self.use_viewdirs:
             assert viewdirs is not None
             viewdirs = viewdirs[None]
-            viewdirs_enc = model_utils.posenc(
-                viewdirs,
-                0,
-                self.deg_view,
-                self.legacy_posenc_order,
-            )
+            # viewdirs_enc = model_utils.posenc(
+            #     viewdirs,
+            #     0,
+            #     self.deg_view,
+            #     self.legacy_posenc_order,
+            # )
+            viewdirs_enc=self.viewdir_encoder(viewdirs) # nerfies
             raw_rgb, raw_sigma = mlp(points_enc, viewdirs_enc)
         else:
-            raw_rgb, raw_sigma = mlp(points_enc)
+            raw_rgb, raw_sigma = mlp(points_enc) # 1,1w,51  out 1,1w,48, 1,1w,1
         return raw_rgb[0], raw_sigma[0]
 
     def eval_points(self, points, viewdirs=None, coarse=False):
@@ -213,6 +228,29 @@ class NerfModel(nn.Module):
         sigma = self.sigma_activation(raw_sigma)
         return rgb, sigma
 
+    # def render_samples(self,
+    #                  points):
+        
+    #     # Apply the deformation field to the samples.
+    #     # if use_warp:
+    #     #     metadata_channels = self.num_warp_features if metadata_encoded else 1
+    #     #     warp_metadata = (
+    #     #         metadata['time']
+    #     #         if self.warp_metadata_encoder_type == 'time' else metadata['warp'])
+    #     #     warp_metadata = jnp.broadcast_to(
+    #     #         warp_metadata[:, jnp.newaxis, :],
+    #     #     shape=(*points.shape[:2], metadata_channels))
+    #     #     warp_out = self.warp_field(
+    #     #         points,
+    #     #         warp_metadata,
+    #     #         warp_extra,
+    #     #         use_warp_jacobian,
+    #     #         metadata_encoded)
+    #     #     points = warp_out['warped_points']
+    #     points_embed=self.point_encoder(points)
+    #     return points_embed
+    
+    
     def __call__(self, rng_0, rng_1, rays, randomized):
         """Nerf Model.
 
@@ -237,24 +275,26 @@ class NerfModel(nn.Module):
             randomized,
             self.lindisp,
         )
-        samples_enc = model_utils.posenc(
-            samples,
-            self.min_deg_point,
-            self.max_deg_point,
-            self.legacy_posenc_order,
-        )
+        # samples_enc = model_utils.posenc(
+        #     samples,
+        #     self.min_deg_point,
+        #     self.max_deg_point,
+        #     self.legacy_posenc_order,
+        # )
+        samples_enc=self.point_encoder(samples) #nerfies in 1024,64,3 out 1024,64,51
 
         # Point attribute predictions
         if self.use_viewdirs:
-            viewdirs_enc = model_utils.posenc(
-                rays.viewdirs,
-                0,
-                self.deg_view,
-                self.legacy_posenc_order,
-            )
+            viewdirs_enc=self.viewdir_encoder(rays.viewdirs) # nerfies
+            # viewdirs_enc_ori = model_utils.posenc(
+            #     rays.viewdirs,
+            #     0,
+            #     self.deg_view,
+            #     self.legacy_posenc_order,
+            # )
             raw_rgb, raw_sigma = self.MLP_0(samples_enc, viewdirs_enc)
         else:
-            raw_rgb, raw_sigma = self.MLP_0(samples_enc)
+            raw_rgb, raw_sigma = self.MLP_0(samples_enc)# 1024,64,48  & 1024,64,1
         # Add noises to regularize the density predictions if needed
         key, rng_0 = random.split(rng_0)
         raw_sigma = model_utils.add_gaussian_noise(
@@ -282,10 +322,10 @@ class NerfModel(nn.Module):
 
         # Volumetric rendering.
         comp_rgb, disp, acc, weights = model_utils.volumetric_rendering(
-            rgb,
-            sigma,
-            z_vals,
-            rays.directions,
+            rgb, # 1024,64,3
+            sigma, # 1024,64,1
+            z_vals, #1024,64
+            rays.directions, #1024,3
             white_bkgd=self.white_bkgd,
         )
         ret = [
@@ -305,12 +345,13 @@ class NerfModel(nn.Module):
                 self.num_fine_samples,
                 randomized,
             )
-            samples_enc = model_utils.posenc(
-                samples,
-                self.min_deg_point,
-                self.max_deg_point,
-                self.legacy_posenc_order,
-            )
+            # samples_enc = model_utils.posenc(
+            #     samples,
+            #     self.min_deg_point,
+            #     self.max_deg_point,
+            #     self.legacy_posenc_order,
+            # )
+            samples_enc=self.point_encoder(samples) # nerfies
 
             if self.use_viewdirs:
                 raw_rgb, raw_sigma = self.MLP_1(samples_enc, viewdirs_enc)
@@ -419,7 +460,23 @@ def construct_nerf(key, args):
         rgb_activation=rgb_activation,
         sigma_activation=sigma_activation,
         legacy_posenc_order=args.legacy_posenc_order,
+        num_nerf_point_freqs=args.num_nerf_point_freqs,
+        num_nerf_viewdir_freqs=args.num_nerf_viewdir_freqs
     )
+    init_rays_dict = {
+      'origins': jnp.ones((args.batch_size, 3), jnp.float32),
+      'directions': jnp.ones((args.batch_size, 3), jnp.float32),
+      'metadata': {
+          'warp': jnp.ones((args.batch_size, 1), jnp.uint32),
+          'camera': jnp.ones((args.batch_size, 1), jnp.uint32),
+          'appearance': jnp.ones((args.batch_size, 1), jnp.uint32),
+          'time': jnp.ones((args.batch_size, 1), jnp.float32),
+      }
+    }
+    warp_extra = {
+        'alpha': 0.0,
+        'time_alpha': 0.0,
+    }
     key1, key = random.split(key)
     init_variables = model.init(
         key1,

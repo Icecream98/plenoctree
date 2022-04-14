@@ -30,7 +30,7 @@ import numpy as np
 from PIL import Image
 import yaml
 from tqdm import tqdm
-from nerf_sh.nerf import datasets
+from nerf import datasets
 
 INTERNAL = False
 
@@ -228,7 +228,16 @@ def define_flags():
         1,
         "Evaluates only every x images, to allow calculating approximate metric values",
     )
-
+    flags.DEFINE_integer(
+        "num_nerf_point_freqs",
+        8,
+        "Nerfies config",
+    )
+    flags.DEFINE_integer(
+        "num_nerf_viewdir_freqs",
+        4,
+        "Nerfies config",
+    )
 
 def update_flags(args):
     """Update the flags in `args` with the contents of the config YAML file."""

@@ -20,6 +20,7 @@
 import os
 # Get rid of ugly TF logs
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 import functools
 import gc
@@ -35,18 +36,36 @@ from jax import config
 from jax import random
 import jax.numpy as jnp
 import numpy as np
+from typing import Any
+import immutabledict
 
 
-from nerf_sh.nerf import datasets
-from nerf_sh.nerf import models
-from nerf_sh.nerf import utils
-from nerf_sh.nerf.utils import host0_print as h0print
+from nerf import datasets
+from nerf import models
+from nerf import utils
+from nerf import schedules
+from nerf import configs
+from nerf.utils import host0_print as h0print
 
 FLAGS = flags.FLAGS
 
 utils.define_flags()
 config.parse_flags_with_absl()
+FLAGS.train_dir='/home/oppo2/Documents/zzr/plenoctree/debug/nerfies'
+FLAGS.config='/home/oppo2/Documents/zzr/plenoctree/nerf_sh/config/blender'
+FLAGS.data_dir='/home/oppo2/Documents/zzr/mipnerf/data/nerf_synthetic/drums'
 
+ScheduleDef=Any
+# The start value of the warp alpha.
+warp_alpha_schedule: ScheduleDef = immutabledict.immutabledict({
+    'type': 'linear',
+    'initial_value': 0.0,
+    'final_value': 8.0,
+    'num_steps': 80000,
+})
+
+# The time encoder alpha schedule.
+time_alpha_schedule: ScheduleDef = ('constant', 0.0)
 
 def train_step(model, rng, state, batch, lr):
     """One optimization step.
@@ -131,6 +150,12 @@ def main(unused_argv):
     utils.update_flags(FLAGS)
     utils.check_flags(FLAGS, require_batch_size_div=True)
 
+    devices = jax.local_devices()
+    FLAGS.num_nerf_point_freqs=8
+    FLAGS.num_nerf_viewdir_freqs=4
+    # FLAGS.use_appearance_metadata = False
+    # FLAGS.use_camera_metadata = True
+    
     utils.makedirs(FLAGS.train_dir)
     render_dir = os.path.join(FLAGS.train_dir, 'render')
     utils.makedirs(render_dir)
@@ -179,6 +204,9 @@ def main(unused_argv):
     if jax.host_id() == 0:
         summary_writer = tensorboard.SummaryWriter(FLAGS.train_dir)
 
+    warp_alpha_sched = schedules.from_config(warp_alpha_schedule)
+    time_alpha_sched = schedules.from_config(time_alpha_schedule)
+    
     h0print('* Prefetch')
     # Prefetch_buffer_size = 3 x batch_size
     pdataset = flax.jax_utils.prefetch_to_device(dataset, 3)
@@ -195,6 +223,9 @@ def main(unused_argv):
             t_loop_start = time.time()
             reset_timer = False
         lr = learning_rate_fn(step)
+        warp_alpha = flax.jax_utils.replicate(warp_alpha_sched(step), devices)
+        time_alpha = flax.jax_utils.replicate(time_alpha_sched(step), devices)
+        #state = state.replace(warp_alpha=warp_alpha, time_alpha=time_alpha)
         state, stats, keys = train_pstep(keys, state, batch, lr)
         if jax.host_id() == 0:
             stats_trace.append(stats)

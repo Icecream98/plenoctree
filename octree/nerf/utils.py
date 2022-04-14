@@ -29,7 +29,7 @@ import numpy as np
 from PIL import Image
 import yaml
 from tqdm import tqdm
-from octree.nerf import datasets
+from nerf import datasets
 
 INTERNAL = False
 
@@ -202,7 +202,7 @@ def define_flags():
     flags.DEFINE_bool("save_output", True, "save predicted images to disk if True.")
     flags.DEFINE_integer(
         "chunk",
-        81920,
+        10240,
         "the size of chunks for evaluation inferences, set to the value that"
         "fits your GPU/TPU memory.",
     )
@@ -217,6 +217,16 @@ def define_flags():
         'no_early_stop',
         False,
         'If set, does not use early stopping; slows down rendering slightly')
+    flags.DEFINE_integer(
+        "num_nerf_point_freqs",
+        8,
+        "Nerfies config",
+    )
+    flags.DEFINE_integer(
+        "num_nerf_viewdir_freqs",
+        4,
+        "Nerfies config",
+    )
 
 
 def update_flags(args):

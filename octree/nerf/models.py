@@ -21,11 +21,17 @@ import inspect
 from typing import Any, Callable
 import math
 
+import functorch
 import torch
 import torch.nn as nn
 
-from octree.nerf import model_utils
+from nerf import model_utils
+from nerf import modules
 
+import cupy
+import jax.numpy as jnp
+import jax
+import jax.random as random
 
 def get_model(args):
     """A helper function that wraps around a 'model zoo'."""
@@ -142,32 +148,36 @@ class NerfModel(nn.Module):
         rgb_activation: Callable[Ellipsis, Any] = nn.Sigmoid(),  # Output RGB activation.
         sigma_activation: Callable[Ellipsis, Any] = nn.ReLU(),  # Output sigma activation.
         legacy_posenc_order: bool = False,  # Keep the same ordering as the original tf code.
+        num_nerf_point_freqs: int = 8, # nerfies config.
+        num_nerf_viewdir_freqs: int = 4, # nerfies config.
     ):
         super(NerfModel, self).__init__()
-        self.num_coarse_samples = num_coarse_samples
-        self.num_fine_samples = num_fine_samples
-        self.use_viewdirs = use_viewdirs
-        self.sh_deg = sh_deg
-        self.sg_dim = sg_dim
-        self.near = near
-        self.far = far
-        self.noise_std = noise_std
-        self.net_depth = net_depth
-        self.net_width = net_width
-        self.net_depth_condition = net_depth_condition
-        self.net_width_condition = net_width_condition
-        self.net_activation = net_activation
-        self.skip_layer = skip_layer
-        self.num_rgb_channels = num_rgb_channels
-        self.num_sigma_channels = num_sigma_channels
-        self.white_bkgd = white_bkgd
-        self.min_deg_point = min_deg_point
-        self.max_deg_point = max_deg_point
-        self.deg_view = deg_view
-        self.lindisp = lindisp
-        self.rgb_activation = rgb_activation
-        self.sigma_activation = sigma_activation
-        self.legacy_posenc_order = legacy_posenc_order
+        self.num_coarse_samples = num_coarse_samples # 64
+        self.num_fine_samples = num_fine_samples #128
+        self.use_viewdirs = use_viewdirs # F
+        self.sh_deg = sh_deg # 3
+        self.sg_dim = sg_dim # -1
+        self.near = near # 2
+        self.far = far # 6
+        self.noise_std = noise_std # None
+        self.net_depth = net_depth # 8 
+        self.net_width = net_width # 256
+        self.net_depth_condition = net_depth_condition # 1
+        self.net_width_condition = net_width_condition # 128
+        self.net_activation = net_activation # relu vs 不知
+        self.skip_layer = skip_layer # 4
+        self.num_rgb_channels = num_rgb_channels # 48
+        self.num_sigma_channels = num_sigma_channels # 1
+        self.white_bkgd = white_bkgd # T
+        self.min_deg_point = min_deg_point # 0
+        self.max_deg_point = max_deg_point # 10
+        self.deg_view = deg_view # 4
+        self.lindisp = lindisp # F
+        self.rgb_activation = rgb_activation # sigmoid  VS 无
+        self.sigma_activation = sigma_activation # relu
+        self.legacy_posenc_order = legacy_posenc_order # F
+        self.num_nerf_point_freqs=num_nerf_point_freqs # 8
+        self.num_nerf_viewdir_freqs=num_nerf_viewdir_freqs # 4
         # Construct the "coarse" MLP. Weird name is for
         # compatibility with 'compact' version
         self.MLP_0 = model_utils.MLP(
@@ -179,7 +189,7 @@ class NerfModel(nn.Module):
             skip_layer = self.skip_layer,
             num_rgb_channels = self.num_rgb_channels,
             num_sigma_channels = self.num_sigma_channels,
-            input_dim=3 * (1 + 2 * (self.max_deg_point - self.min_deg_point)),
+            input_dim=51, # 3 * (1 + 2 * (self.max_deg_point - self.min_deg_point)),
             condition_dim=3 * (1 + 2 * self.deg_view) if self.use_viewdirs else 0)
         # Construct the "fine" MLP.
         self.MLP_1 = model_utils.MLP(
@@ -191,7 +201,7 @@ class NerfModel(nn.Module):
             skip_layer = self.skip_layer,
             num_rgb_channels = self.num_rgb_channels,
             num_sigma_channels = self.num_sigma_channels,
-            input_dim=3 * (1 + 2 * (self.max_deg_point - self.min_deg_point)),
+            input_dim=51, # 3 * (1 + 2 * (self.max_deg_point - self.min_deg_point)),
             condition_dim=3 * (1 + 2 * self.deg_view) if self.use_viewdirs else 0)
 
         # Construct learnable variables for spherical gaussians.
@@ -207,6 +217,14 @@ class NerfModel(nn.Module):
                     torch.rand([self.sg_dim]) * math.pi * 2  # phi
                 ], dim=-1))
             )
+            
+        self.point_encoder = modules.SinusoidalEncoder(num_freqs=8)
+        # for _ in range(2):
+        #    self.point_encoder = functorch.vmap(self.point_encoder)
+            
+        # self.viewdir_encoder = model_utils.vmap_module(
+        #     modules.SinusoidalEncoder, num_batch_dims=1)(
+        #         num_freqs=self.num_nerf_viewdir_freqs)
 
     def eval_points_raw(self, points, viewdirs=None, coarse=False, cross_broadcast=False):
         """
@@ -226,13 +244,18 @@ class NerfModel(nn.Module):
             returns [B, M, 3 * (sh_deg + 1)**2 or 3]
           raw_sigma: torch.tensor [B, 1]
         """
-        points = points[None]
-        points_enc = model_utils.posenc(
-            points,
-            self.min_deg_point,
-            self.max_deg_point,
-            self.legacy_posenc_order,
-        )
+        # points_enc = model_utils.posenc(
+        #     points,
+        #     self.min_deg_point,
+        #     self.max_deg_point,
+        #     self.legacy_posenc_order,
+        # )
+        points_enc=[]
+        for idx,point in enumerate(points):
+            point_enc=self.point_encoder(point) #nerfies
+            points_enc.append(point_enc)
+        points_enc=torch.asarray(cupy.asarray(points_enc).get()).to("cuda")[None]
+        #points_enc=torch.stack(torch_points_enc).to("cuda")
         if self.num_fine_samples > 0 and not coarse:
             mlp = self.MLP_1
         else:
@@ -240,15 +263,16 @@ class NerfModel(nn.Module):
         if self.use_viewdirs:
             assert viewdirs is not None
             viewdirs = viewdirs[None]
-            viewdirs_enc = model_utils.posenc(
-                viewdirs,
-                0,
-                self.deg_view,
-                self.legacy_posenc_order,
-            )
+            # viewdirs_enc = model_utils.posenc(
+            #     viewdirs,
+            #     0,
+            #     self.deg_view,
+            #     self.legacy_posenc_order,
+            # )
+            viewdirs_enc=self.viewdir_encoder(viewdirs) # nerfies
             raw_rgb, raw_sigma = mlp(points_enc, viewdirs_enc, cross_broadcast=cross_broadcast)
         else:
-            raw_rgb, raw_sigma = mlp(points_enc)
+            raw_rgb, raw_sigma = mlp(points_enc)# batchsize,featuresize 1024,51
         return raw_rgb[0], raw_sigma[0]
 
 
@@ -275,9 +299,9 @@ def construct_nerf(args):
     # Assert that rgb_activation always produces outputs in [0, 1], and
     # sigma_activation always produce non-negative outputs.
     x = torch.exp(torch.linspace(-90, 90, 1024))
-    x = torch.cat([-x, x], dim=0)
+    x = torch.cat([-x, x], dim=0) #2048
 
-    rgb = rgb_activation(x)
+    rgb = rgb_activation(x) # 2048
     if torch.any(rgb < 0) or torch.any(rgb > 1):
         raise NotImplementedError(
             "Choice of rgb_activation `{}` produces colors outside of [0, 1]".format(
@@ -285,7 +309,7 @@ def construct_nerf(args):
             )
         )
 
-    sigma = sigma_activation(x)
+    sigma = sigma_activation(x) # 2048
     if torch.any(sigma < 0):
         raise NotImplementedError(
             "Choice of sigma_activation `{}` produces negative densities".format(
@@ -329,5 +353,7 @@ def construct_nerf(args):
         rgb_activation=rgb_activation,
         sigma_activation=sigma_activation,
         legacy_posenc_order=args.legacy_posenc_order,
+        num_nerf_point_freqs=args.num_nerf_point_freqs,
+        num_nerf_viewdir_freqs=args.num_nerf_viewdir_freqs
     )
     return model

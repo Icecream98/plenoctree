@@ -47,15 +47,20 @@ import os.path as osp
 from absl import app
 from absl import flags
 
-from octree.nerf import models
-from octree.nerf import utils
-from octree.nerf import datasets
-from octree.nerf import sh_proj
+import cupy
+import jax.numpy as jnp
+
+from nerf import models
+from nerf import utils
+from nerf import datasets
+from nerf import sh_proj
 
 from svox import N3Tree
 from svox import NDCConfig, VolumeRenderer
 from svox.helpers import _get_c_extension
 from tqdm import tqdm
+
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
 _C = _get_c_extension()
 
@@ -105,7 +110,7 @@ flags.DEFINE_integer(
 )
 flags.DEFINE_integer(
     "init_grid_depth",
-    8,
+    6,
     "Initial evaluation grid (2^{x+1} voxel grid)",
 )
 flags.DEFINE_integer(
@@ -309,11 +314,13 @@ def step1(args, tree, nerf, dataset):
     out_chunks = []
     for i in tqdm(range(0, grid.shape[0], args.chunk)):
         grid_chunk = grid[i:i+args.chunk].cuda()
+        np_grid_chunk=cupy.asarray(grid_chunk).get()# 1,1,chunk,3
+        jnp_grid_chunk=jnp.asarray(np_grid_chunk, dtype=jnp.float32)
         if nerf.use_viewdirs:
             fake_viewdirs = torch.zeros([grid_chunk.shape[0], 3], device=grid_chunk.device)
         else:
             fake_viewdirs = None
-        rgb, sigma = nerf.eval_points_raw(grid_chunk, fake_viewdirs)
+        rgb, sigma = nerf.eval_points_raw(jnp_grid_chunk, fake_viewdirs)
         del grid_chunk
         out_chunks.append(sigma.squeeze(-1))
     sigmas = torch.cat(out_chunks, 0)
@@ -370,7 +377,9 @@ def step2(args, tree, nerf):
         points = points.view(-1, 3)
 
         if not args.use_viewdirs:  # trained NeRF-SH/SG model returns rgb as coeffs
-            rgb, sigma = nerf.eval_points_raw(points)
+            np_points=cupy.asarray(points).get()# 1,1,chunk,3
+            jnp_points=jnp.asarray(np_points, dtype=jnp.float32)
+            rgb, sigma = nerf.eval_points_raw(jnp_points)
         else:  # vanilla NeRF model returns rgb, so we project them into coeffs (only SH supported)
             rgb, sigma = project_nerf_to_sh(nerf, args.sh_deg, points)
 
@@ -425,6 +434,14 @@ def euler2mat(angle):
 @torch.no_grad()
 def main(unused_argv):
     utils.set_random_seed(20200823)
+    
+    FLAGS.num_nerf_point_freqs=8
+    FLAGS.num_nerf_viewdir_freqs=4
+    FLAGS.train_dir='/home/oppo2/Documents/zzr/plenoctree/debug/nerfies/'
+    FLAGS.is_jaxnerf_ckpt=True
+    FLAGS.config='/home/oppo2/Documents/zzr/plenoctree/nerf_sh/config/blender'
+    FLAGS.data_dir='/home/oppo2/Documents/zzr/mipnerf/data/nerf_synthetic/drums'
+    FLAGS.output=FLAGS.train_dir+'/nerfies-tree.npz'
     utils.update_flags(FLAGS)
 
     print('* Loading NeRF')
