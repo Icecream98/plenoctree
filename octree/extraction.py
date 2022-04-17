@@ -110,7 +110,7 @@ flags.DEFINE_integer(
 )
 flags.DEFINE_integer(
     "init_grid_depth",
-    6,
+    7,
     "Initial evaluation grid (2^{x+1} voxel grid)",
 )
 flags.DEFINE_integer(
@@ -314,7 +314,7 @@ def step1(args, tree, nerf, dataset):
     out_chunks = []
     for i in tqdm(range(0, grid.shape[0], args.chunk)):
         grid_chunk = grid[i:i+args.chunk].cuda()
-        np_grid_chunk=cupy.asarray(grid_chunk).get()# 1,1,chunk,3
+        np_grid_chunk=cupy.asarray(grid_chunk).get()# 1,1,chunk,3 asnumpy asarray array
         jnp_grid_chunk=jnp.asarray(np_grid_chunk, dtype=jnp.float32)
         if nerf.use_viewdirs:
             fake_viewdirs = torch.zeros([grid_chunk.shape[0], 3], device=grid_chunk.device)
@@ -445,6 +445,7 @@ def main(unused_argv):
     utils.update_flags(FLAGS)
 
     print('* Loading NeRF')
+    # changed like train.py
     nerf = models.get_model_state(FLAGS, device=device, restore=True)
     nerf.eval()
 
@@ -525,12 +526,12 @@ def main(unused_argv):
     print('* Saving', FLAGS.output)
     tree.save(FLAGS.output, compress=False)  # Faster saving
 
-    if FLAGS.eval:
-        dataset = datasets.get_dataset("test", FLAGS)
-        print('* Evaluation (before fine tune)')
-        avg_psnr, avg_ssim, avg_lpips, out_frames = utils.eval_octree(tree,
-                dataset, FLAGS, want_lpips=True)
-        print('Average PSNR', avg_psnr, 'SSIM', avg_ssim, 'LPIPS', avg_lpips)
+    # if FLAGS.eval:
+    #     dataset = datasets.get_dataset("test", FLAGS)
+    #     print('* Evaluation (before fine tune)')
+    #     avg_psnr, avg_ssim, avg_lpips, out_frames = utils.eval_octree(tree,
+    #             dataset, FLAGS, want_lpips=True)
+    #     print('Average PSNR', avg_psnr, 'SSIM', avg_ssim, 'LPIPS', avg_lpips)
 
 
 if __name__ == "__main__":

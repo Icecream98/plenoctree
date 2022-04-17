@@ -174,7 +174,15 @@ def main(unused_argv):
     test_dataset = datasets.get_dataset("test", FLAGS)
 
     h0print('* Load model')
-    model, state = models.get_model_state(key, FLAGS)
+    
+    model, variables = models.get_model(key, FLAGS)
+    optimizer = flax.optim.Adam(FLAGS.lr_init).create(variables)
+    state = utils.TrainState(
+        optimizer=optimizer,
+        warp_alpha=warp_alpha_sched(0),
+        time_alpha=time_alpha_sched(0))
+    if FLAGS.restore:
+        state = checkpoints.restore_checkpoint(FLAGS.train_dir, state)
 
     learning_rate_fn = functools.partial(
         utils.learning_rate_decay,
@@ -225,7 +233,7 @@ def main(unused_argv):
         lr = learning_rate_fn(step)
         warp_alpha = flax.jax_utils.replicate(warp_alpha_sched(step), devices)
         time_alpha = flax.jax_utils.replicate(time_alpha_sched(step), devices)
-        #state = state.replace(warp_alpha=warp_alpha, time_alpha=time_alpha)
+        state = state.replace(warp_alpha=warp_alpha, time_alpha=time_alpha)
         state, stats, keys = train_pstep(keys, state, batch, lr)
         if jax.host_id() == 0:
             stats_trace.append(stats)
@@ -237,6 +245,8 @@ def main(unused_argv):
         # only use host 0 to record results.
         if jax.host_id() == 0:
             if step % FLAGS.print_every == 0:
+                summary_writer.scalar("warp_alpha", warp_alpha_sched(step), step)
+                summary_writer.scalar("time_alpha", time_alpha_sched(step), step)
                 summary_writer.scalar("train_loss", stats.loss[0], step)
                 summary_writer.scalar("train_psnr", stats.psnr[0], step)
                 summary_writer.scalar("train_loss_coarse", stats.loss_c[0], step)

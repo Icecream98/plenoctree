@@ -64,6 +64,7 @@ class SinusoidalEncoder(nn.Module):
       A tensor containing the encoded features.
     """
     # ***************************  original setup BEG  **********************
+    # 这样做是纯当函数用了，torch里用flax，不支持保存变量啥的 
     if self.max_freq_log2 is None:
       max_freq_log2 = self.num_freqs - 1.0
     else:

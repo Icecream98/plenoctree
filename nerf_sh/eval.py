@@ -29,6 +29,8 @@ from absl import flags
 import flax
 from flax.metrics import tensorboard
 from flax.training import checkpoints
+from typing import Any
+import immutabledict
 import jax
 from jax import random
 import numpy as np
@@ -36,6 +38,7 @@ import numpy as np
 from nerf import datasets
 from nerf import models
 from nerf import utils
+from nerf import schedules
 
 FLAGS = flags.FLAGS
 
@@ -44,6 +47,17 @@ FLAGS.train_dir='/home/oppo2/Documents/zzr/plenoctree/debug/nerfies'
 FLAGS.config='/home/oppo2/Documents/zzr/plenoctree/nerf_sh/config/blender'
 FLAGS.data_dir='/home/oppo2/Documents/zzr/mipnerf/data/nerf_synthetic/drums'
 
+ScheduleDef=Any
+# The start value of the warp alpha.
+warp_alpha_schedule: ScheduleDef = immutabledict.immutabledict({
+    'type': 'linear',
+    'initial_value': 0.0,
+    'final_value': 8.0,
+    'num_steps': 80000,
+})
+
+# The time encoder alpha schedule.
+time_alpha_schedule: ScheduleDef = ('constant', 0.0)
 
 def main(unused_argv):
     rng = random.PRNGKey(20200823)
@@ -53,8 +67,17 @@ def main(unused_argv):
     utils.check_flags(FLAGS)
 
     dataset = datasets.get_dataset("test", FLAGS)
-    model, state = models.get_model_state(key, FLAGS, restore=False)
+    # model, state = models.get_model_state(key, FLAGS, restore=False)
 
+
+    warp_alpha_sched = schedules.from_config(warp_alpha_schedule)
+    time_alpha_sched = schedules.from_config(time_alpha_schedule)
+    model, variables = models.get_model(key, FLAGS)
+    optimizer = flax.optim.Adam(FLAGS.lr_init).create(variables)
+    state = utils.TrainState(
+        optimizer=optimizer,
+        warp_alpha=warp_alpha_sched(0),
+        time_alpha=time_alpha_sched(0))
     # Rendering is forced to be deterministic even if training was randomized, as
     # this eliminates "speckle" artifacts.
     render_pfn = utils.get_render_pfn(model, randomized=False)

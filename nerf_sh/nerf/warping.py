@@ -102,24 +102,24 @@ class TranslationField(nn.Module):
         max_freq_log2=self.max_freq_log2,
         use_identity=self.use_identity_map)
 
-    if self.metadata_encoder_type == 'glo':
-      self.metadata_encoder = glo.GloEncoder(
-          num_embeddings=self.num_embeddings,
-          features=self.num_embedding_features)
-    elif self.metadata_encoder_type == 'time':
-      self.metadata_encoder = modules.TimeEncoder(
-          num_freqs=self.metadata_encoder_num_freqs,
-          features=self.num_embedding_features)
-    elif self.metadata_encoder_type == 'blend':
-      self.glo_encoder = glo.GloEncoder(
-          num_embeddings=self.num_embeddings,
-          features=self.num_embedding_features)
-      self.time_encoder = modules.TimeEncoder(
-          num_freqs=self.metadata_encoder_num_freqs,
-          features=self.num_embedding_features)
-    else:
-      raise ValueError(
-          f'Unknown metadata encoder type {self.metadata_encoder_type}')
+    # if self.metadata_encoder_type == 'glo':
+    #   self.metadata_encoder = glo.GloEncoder(
+    #       num_embeddings=self.num_embeddings,
+    #       features=self.num_embedding_features)
+    # elif self.metadata_encoder_type == 'time':
+    #   self.metadata_encoder = modules.TimeEncoder(
+    #       num_freqs=self.metadata_encoder_num_freqs,
+    #       features=self.num_embedding_features)
+    # elif self.metadata_encoder_type == 'blend':
+    #   self.glo_encoder = glo.GloEncoder(
+    #       num_embeddings=self.num_embeddings,
+    #       features=self.num_embedding_features)
+    #   self.time_encoder = modules.TimeEncoder(
+    #       num_freqs=self.metadata_encoder_num_freqs,
+    #       features=self.num_embedding_features)
+    # else:
+    #   raise ValueError(
+    #       f'Unknown metadata encoder type {self.metadata_encoder_type}')
 
     # Note that this must be done this way instead of using mutable list
     # operations.
@@ -134,30 +134,29 @@ class TranslationField(nn.Module):
         output_init=self.output_init,
         output_channels=output_dims)
 
-  def encode_metadata(self,
-                      metadata: jnp.ndarray,
-                      time_alpha: Optional[float] = None):
-    if self.metadata_encoder_type == 'time':
-      metadata_embed = self.metadata_encoder(metadata, time_alpha)
-    elif self.metadata_encoder_type == 'blend':
-      glo_embed = self.glo_encoder(metadata)
-      time_embed = self.time_encoder(metadata)
-      metadata_embed = ((1.0 - time_alpha) * glo_embed +
-                        time_alpha * time_embed)
-    elif self.metadata_encoder_type == 'glo':
-      metadata_embed = self.metadata_encoder(metadata)
-    else:
-      raise RuntimeError(
-          f'Unknown metadata encoder type {self.metadata_encoder_type}')
+  # def encode_metadata(self,
+  #                     metadata: jnp.ndarray,
+  #                     time_alpha: Optional[float] = None):
+  #   if self.metadata_encoder_type == 'time':
+  #     metadata_embed = self.metadata_encoder(metadata, time_alpha)
+  #   elif self.metadata_encoder_type == 'blend':
+  #     glo_embed = self.glo_encoder(metadata)
+  #     time_embed = self.time_encoder(metadata)
+  #     metadata_embed = ((1.0 - time_alpha) * glo_embed +
+  #                       time_alpha * time_embed)
+  #   elif self.metadata_encoder_type == 'glo':
+  #     metadata_embed = self.metadata_encoder(metadata)
+  #   else:
+  #     raise RuntimeError(
+  #         f'Unknown metadata encoder type {self.metadata_encoder_type}')
 
-    return metadata_embed
+  #   return metadata_embed
 
   def warp(self,
            points: jnp.ndarray,
-           metadata_embed: jnp.ndarray,
            extra: Dict[str, Any]):
     points_embed = self.points_encoder(points, alpha=extra.get('alpha'))
-    inputs = jnp.concatenate([points_embed, metadata_embed], axis=-1)
+    inputs = jnp.concatenate(points_embed, axis=-1)
     translation = self.mlp(inputs)
     warped_points = points + translation
 
@@ -183,19 +182,12 @@ class TranslationField(nn.Module):
       The warped points and the Jacobian of the warp if `return_jacobian` is
         True.
     """
-    if metadata_encoded:
-      metadata_embed = metadata
-    else:
-      metadata_embed = self.encode_metadata(metadata, extra.get('time_alpha'))
+    # if metadata_encoded:
+    #   metadata_embed = metadata
+    # else:
+    #   metadata_embed = self.encode_metadata(metadata, extra.get('time_alpha'))
 
-    out = {
-        'warped_points': self.warp(points, metadata_embed, extra)
-    }
-
-    if return_jacobian:
-      jac_fn = jax.jacfwd(lambda *x: self.warp(*x)[..., :3], argnums=0)
-      out['jacobian'] = jac_fn(points, metadata_embed, extra)
-
+    out = self.warp(points, extra)
     return out
 
 

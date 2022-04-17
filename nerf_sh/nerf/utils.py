@@ -38,6 +38,12 @@ INTERNAL = False
 @flax.struct.dataclass
 class TrainState:
     optimizer: flax.optim.Optimizer
+    warp_alpha: jnp.ndarray = 0.0
+    time_alpha: jnp.ndarray = 0.0
+
+    @property
+    def warp_extra(self):
+        return {'alpha': self.warp_alpha, 'time_alpha': self.time_alpha}
 
 
 @flax.struct.dataclass
@@ -236,6 +242,11 @@ def define_flags():
     flags.DEFINE_integer(
         "num_nerf_viewdir_freqs",
         4,
+        "Nerfies config",
+    )
+    flags.DEFINE_bool(
+        "use_warp",
+        False,
         "Nerfies config",
     )
 

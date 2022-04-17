@@ -27,6 +27,7 @@ from nerf import utils
 from nerf import sh
 from nerf import sg
 from nerf import modules
+from nerf import warping
 
 
 def get_model(key, args):
@@ -36,18 +37,21 @@ def get_model(key, args):
     }
     return model_dict[args.model](key, args)
 
-def get_model_state(key, args, restore=True):
-    """
-    Helper for loading model with get_model & creating optimizer &
-    optionally restoring checkpoint to reduce boilerplate
-    """
-    model, variables = get_model(key, args)
-    optimizer = flax.optim.Adam(args.lr_init).create(variables)
-    state = utils.TrainState(optimizer=optimizer)
-    if restore:
-        from flax.training import checkpoints
-        state = checkpoints.restore_checkpoint(args.train_dir, state)
-    return model, state
+# def get_model_state(key, args, restore=True):
+#     """
+#     Helper for loading model with get_model & creating optimizer &
+#     optionally restoring checkpoint to reduce boilerplate
+#     """
+#     model, variables = get_model(key, args)
+#     optimizer = flax.optim.Adam(args.lr_init).create(variables)
+#     state = utils.TrainState(
+#         optimizer=optimizer,
+#         warp_alpha=warp_alpha_sched(0),
+#         time_alpha=time_alpha_sched(0))
+#     if restore:
+#         from flax.training import checkpoints
+#         state = checkpoints.restore_checkpoint(args.train_dir, state)
+#     return model, state
 
 
 class NerfModel(nn.Module):
@@ -79,10 +83,15 @@ class NerfModel(nn.Module):
     legacy_posenc_order: bool  # Keep the same ordering as the original tf code.
     num_nerf_point_freqs: int # nerfies config
     num_nerf_viewdir_freqs: int # nerfies config
+    use_warp: bool # nerfies config
 
     def setup(self):
         # Construct the "coarse" MLP. Weird name is for
         # compatibility with 'compact' version
+        
+        if self.use_warp:
+            self.warp_field = self.create_warp_field(self, num_batch_dims=2)
+            
         self.MLP_0 = model_utils.MLP(
             net_depth=self.net_depth,
             net_width=self.net_width,
@@ -152,6 +161,17 @@ class NerfModel(nn.Module):
             if self.num_fine_samples > 0:
                 self.MLP_1(points_enc)
 
+    @staticmethod
+    def create_warp_field(model, num_batch_dims):
+        return warping.create_warp_field(
+            field_type=model.warp_field_type,
+            num_freqs=model.num_warp_freqs,
+            num_embeddings=model.num_warp_embeddings,
+            num_features=model.num_warp_features,
+            num_batch_dims=num_batch_dims,
+            metadata_encoder_type=model.warp_metadata_encoder_type,
+            **model.warp_kwargs)
+        
     def eval_points_raw(self, points, viewdirs=None, coarse=False):
         """
         Evaluate at points, returing rgb and sigma.
@@ -275,12 +295,9 @@ class NerfModel(nn.Module):
             randomized,
             self.lindisp,
         )
-        # samples_enc = model_utils.posenc(
-        #     samples,
-        #     self.min_deg_point,
-        #     self.max_deg_point,
-        #     self.legacy_posenc_order,
-        # )
+        
+        # frequency band encoding
+        samples=self.warp_field(samples)
         samples_enc=self.point_encoder(samples) #nerfies in 1024,64,3 out 1024,64,51
 
         # Point attribute predictions
@@ -461,7 +478,8 @@ def construct_nerf(key, args):
         sigma_activation=sigma_activation,
         legacy_posenc_order=args.legacy_posenc_order,
         num_nerf_point_freqs=args.num_nerf_point_freqs,
-        num_nerf_viewdir_freqs=args.num_nerf_viewdir_freqs
+        num_nerf_viewdir_freqs=args.num_nerf_viewdir_freqs,
+        use_warp=args.use_warp
     )
     init_rays_dict = {
       'origins': jnp.ones((args.batch_size, 3), jnp.float32),
@@ -477,9 +495,16 @@ def construct_nerf(key, args):
         'alpha': 0.0,
         'time_alpha': 0.0,
     }
-    key1, key = random.split(key)
+    key, key1, key2  = random.split(key,3)
     init_variables = model.init(
-        key1,
+        key,
         method=model._quick_init,
     )
+    init_variables = model.init({
+      'params': key,
+      'coarse': key1,
+      'fine': key2
+  },
+                      init_rays_dict,
+                      warp_extra=warp_extra)['params']
     return model, init_variables
